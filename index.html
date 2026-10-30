@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Online Snooker</title><script src="/socket.io/socket.io.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101a18;color:#f4f4ee;font-family:system-ui,Arial;padding:18px}
+main{max-width:1000px;margin:auto}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:clamp(24px,5vw,38px);margin:4px 0;color:#f0d58b}.panel{background:#1b2b27;border:1px solid #395047;border-radius:14px;padding:14px;margin:12px 0}
+.row{display:flex;gap:9px;flex-wrap:wrap}input,button{font:inherit;border-radius:9px;padding:11px 13px;border:1px solid #62776d}
+input{background:#0d1714;color:white;min-width:0;flex:1}button{background:#d8b86b;color:#1a1a14;font-weight:700;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}
+#game{width:100%;height:auto;display:block;border-radius:12px;background:#075638;touch-action:pan-y}
+.stats{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.muted{color:#b7c8bf;font-size:14px}
+#message{min-height:24px;color:#f0d58b}label{display:block;font-size:13px;color:#c4d2ca;margin:8px 0 4px}
+.controls{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end}
+@media(max-width:550px){body{padding:10px}.controls{grid-template-columns:1fr}}
+</style></head><body><main>
+<div class="top"><h1>🎱 Online Snooker</h1><span class="muted">1 vs 1 · Play with a room code</span></div>
+<section class="panel" id="lobby">
+ <p>Choose a name and room code. Give the same room code to your friend so they can join you.</p>
+ <div class="row"><input id="name" maxlength="18" placeholder="Your name" value="Player"><input id="room" maxlength="6" placeholder="Room code (e.g. 8BALL)" value=""></div>
+ <div class="row" style="margin-top:10px"><button id="join">Create / Join Room</button><button id="random" type="button">Random room code</button></div>
+</section>
+<section class="panel">
+ <div class="stats"><strong id="players">Waiting for players…</strong><strong id="score">0 – 0</strong></div>
+ <p class="muted" id="turn">Join a room to begin. Both players must use the same code.</p>
+ <canvas id="game" width="900" height="480" aria-label="Snooker table"></canvas>
+ <div class="controls">
+  <div><label for="power">Shot power</label><input id="power" type="range" min="1" max="14" value="7" style="width:100%"><div class="muted">Tap or click the table to aim, then shoot.</div></div>
+  <button id="shoot" disabled>SHOOT</button>
+ </div>
+ <p id="message" aria-live="polite"></p>
+</section>
+<p class="muted">Tip: Open this page on two devices, join the same room code, and take turns. This is an early playable version with simplified snooker scoring and physics.</p>
+</main>
+<script>
+const socket=io(); const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+let state=null,slot=-1,angle=0,aimPoint={x:600,y:240},connected=false;
+const $=id=>document.getElementById(id);
+function draw(){
+ ctx.clearRect(0,0,900,480);
+ ctx.fillStyle="#4a2817";ctx.fillRect(0,0,900,480);
+ ctx.fillStyle="#087044";ctx.fillRect(24,24,852,432);
+ ctx.strokeStyle="#e4d1a0";ctx.lineWidth=2;ctx.strokeRect(42,42,816,396);
+ ctx.beginPath();ctx.arc(300,240,80,-Math.PI/2,Math.PI/2);ctx.strokeStyle="#d8c79d";ctx.lineWidth=2;ctx.stroke();
+ for(const [x,y] of [[42,42],[450,35],[858,42],[42,438],[450,445],[858,438]]){ctx.beginPath();ctx.arc(x,y,17,0,Math.PI*2);ctx.fillStyle="#101010";ctx.fill();}
+ if(state){
+  const cue=state.balls.find(b=>b.id==="cue"&&!b.potted);
+  if(cue&&state.turn===slot&&state.status==="playing"){
+   ctx.beginPath();ctx.moveTo(cue.x,cue.y);ctx.lineTo(cue.x+Math.cos(angle)*Math.min(150,Number($("power").value)*15),cue.y+Math.sin(angle)*Math.min(150,Number($("power").value)*15));ctx.strokeStyle="rgba(255,255,255,.75)";ctx.setLineDash([7,5]);ctx.lineWidth=2;ctx.stroke();ctx.setLineDash([]);
+  }
+  for(const b of state.balls){if(b.potted)continue;ctx.beginPath();ctx.arc(b.x,b.y,9,0,Math.PI*2);ctx.fillStyle=b.color;ctx.fill();ctx.strokeStyle=b.type==="black"?"#aaa":"rgba(0,0,0,.5)";ctx.lineWidth=1;ctx.stroke();ctx.beginPath();ctx.arc(b.x-3,b.y-3,2,0,Math.PI*2);ctx.fillStyle="rgba(255,255,255,.5)";ctx.fill();}
+ } else {
+  for(let i=0;i<15;i++){let row=Math.floor((Math.sqrt(8*i+1)-1)/2),col=i-row*(row+1)/2;ctx.beginPath();ctx.arc(595+row*17,240+(col-row/2)*20,9,0,Math.PI*2);ctx.fillStyle="#d92727";ctx.fill();}
+  ctx.beginPath();ctx.arc(225,240,9,0,Math.PI*2);ctx.fillStyle="white";ctx.fill();
+ }
+}
+function update(){
+ if(!state)return;
+ $("players").textContent=state.players.map(p=>p.name).join("  vs  ") + (state.players.length<2?" · waiting for opponent":"");
+ $("score").textContent=state.scores[0]+" – "+state.scores[1];
+ $("turn").textContent=state.status==="finished"?"Frame finished — all reds are potted.":state.status!=="playing"?"Waiting for another player to join…":(state.players[state.turn]?.name||"Player")+"'s turn";
+ const moving=state.balls.some(b=>!b.potted&&(Math.abs(b.vx)>.08||Math.abs(b.vy)>.08));
+ $("shoot").disabled=state.status!=="playing"||state.turn!==slot||moving;
+ draw();
+}
+$("join").onclick=()=>{const code=$("room").value.trim().toUpperCase();if(!code){$("message").textContent="Please enter a room code.";return;}socket.emit("join",{code,name:$("name").value});$("message").textContent="Joining room…";};
+$("random").onclick=()=>{$("room").value=Math.random().toString(36).slice(2,8).toUpperCase();};
+socket.on("joined",d=>{slot=d.slot;connected=true;$("message").textContent="Joined room "+d.code+". Share this code with your opponent.";});
+socket.on("state",s=>{state=s;update();});
+socket.on("errorMsg",m=>$("message").textContent=m);
+socket.on("notice",m=>$("message").textContent=m);
+canvas.addEventListener("pointerdown",e=>{
+ if(!state||state.turn!==slot)return;
+ const r=canvas.getBoundingClientRect(),x=(e.clientX-r.left)*900/r.width,y=(e.clientY-r.top)*480/r.height;
+ const cue=state.balls.find(b=>b.id==="cue"&&!b.potted);if(cue)angle=Math.atan2(y-cue.y,x-cue.x);draw();
+});
+$("shoot").onclick=()=>{if(!state)return;socket.emit("shoot",{angle,power:Number($("power").value)});};
+draw();
+</script></body></html>
